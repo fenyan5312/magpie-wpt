@@ -1,0 +1,35 @@
+{
+  "name": "magpie-wpt",
+  "version": "0.1.0",
+  "description": "给 magpie 的 WorkBuddy 加一个「粘贴凭据登录」方式（仅供学习与交流）",
+  "type": "module",
+  "main": "./plugin/index.mjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "plugin",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "workbuddy",
+    "codebuddy"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fenyan5312/magpie-wpt.git"
+  },
+  "scripts": {
+    "install-plugin": "magpie plugin add ."
+  },
+  "magpie": {
+    "plugin": {
+      "provider": "workbuddy",
+      "method": "粘贴凭据登录"
+    }
+  }
+}

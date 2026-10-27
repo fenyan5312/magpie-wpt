@@ -1,0 +1,13 @@
+node_modules/
+*.log
+
+# Credentials must never be committed. The plugin reads them from the
+# clipboard or from WPT_FILE; nothing in this repo should hold one.
+*.json.backup*
+plugin-auth*.json
+logins*.json
+cred*.json
+*.info
+.env
+.env.*
+!.env.example
