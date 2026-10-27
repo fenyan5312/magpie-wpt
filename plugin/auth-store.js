@@ -130,14 +130,21 @@ function fromObject(o) {
   // so it is left for displayName() to mask like one.
   const nickname = pick(account.nickname, auth.nickname, o.nickname, o.name, o.display_name);
 
+  // magpie's own store spells the timestamps `expires` / `refreshExpiresAt`
+  // with bare `access` / `refresh`, so it is read too — that is what a backup
+  // of the store is, and restoring one has to work.
+  //
+  // Order matters in the desktop export, which carries `expiresAt` and
+  // `expiresIn` at once: `expiresAt` is the absolute time and wins; a bare
+  // `expiresIn` is a duration counted from now.
   const expires =
-    toMs(pickNum(auth.expiresAt, auth.expires_at, o.expiresAt, o.expires_at, o.expiry, o.expiration)) ||
+    toMs(pickNum(auth.expiresAt, auth.expires_at, o.expiresAt, o.expires_at, o.expiry, o.expiration, o.expires)) ||
     fromDuration(pickNum(auth.expiresIn, auth.expires_in, o.expiresIn, o.expires_in)) ||
     toMs(ac?.exp);
 
   const refreshExpiresAt =
-    toMs(pickNum(auth.refreshExpiresAt, auth.refresh_expires_at, o.refreshExpiresAt, o.refresh_expires_at)) ||
-    fromDuration(pickNum(auth.refreshExpiresIn, auth.refresh_expires_in, o.refreshExpiresIn, o.refresh_expires_in, o.refresh_expiry)) ||
+    toMs(pickNum(auth.refreshExpiresAt, auth.refresh_expires_at, o.refreshExpiresAt, o.refresh_expires_at, o.refresh_expiry)) ||
+    fromDuration(pickNum(auth.refreshExpiresIn, auth.refresh_expires_in, o.refreshExpiresIn, o.refresh_expires_in)) ||
     toMs(rc?.exp);
 
   return {
