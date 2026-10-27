@@ -1,11 +1,14 @@
-// What a pasted credential is, and how to prove it works.
+// What a pasted credential is, and how to put it into magpie's account list.
 //
-// Nothing here writes to magpie's store: magpie itself saves the sign-in that
-// authorize()'s callback returns, which is what keeps the account in the same
-// list, with the same card, as one signed in through the browser.
+// This writes magpie's own store directly and registers no plugin. A plugin
+// would have to take over the `workbuddy` provider to add a sign-in method,
+// and magpie lets only one plugin serve a provider — taking over would hide
+// the browser / desktop / API-key sign-ins the community plugin already
+// offers. Importing an account is not a sign-in method, so it stays out of
+// that contest entirely.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -172,29 +175,72 @@ export async function renew(rec, { fetchImpl = fetch, timeoutMs = 20000 } = {}) 
 /**
  * Uids magpie already holds a WorkBuddy sign-in for.
  *
- * magpie appends whatever a sign-in method returns; it does not check whether
- * the account is already in the list. Without this, pasting a credential for
- * an account that is already there shows it twice — and the second copy holds
- * a refresh token the first one has already spent.
+ * magpie appends whatever it is handed; it does not check whether the account
+ * is already in the list. Without this, importing a credential for an account
+ * that is already there shows it twice — and the second copy holds a refresh
+ * token the first one has already spent.
  *
  * Only this provider's entries are read (`workbuddy`, `workbuddy#xxxxxx`):
  * other providers keep their accounts in the same file, and a uid belongs to
  * the realm it came from.
  */
 export function knownUids() {
+  const out = new Set();
+  for (const v of Object.values(readStore())) {
+    if (v && typeof v === "object" && v.uid) out.add(v.uid);
+  }
+  return out;
+}
+
+/** magpie's sign-in store, as it is on disk. */
+export function readStore() {
   const f = join(configDir(), "plugin-auth.json");
   try {
-    if (!existsSync(f)) return new Set();
-    const store = JSON.parse(readFileSync(f, "utf8"));
-    const out = new Set();
-    for (const [k, v] of Object.entries(store)) {
-      if (k !== "workbuddy" && !k.startsWith("workbuddy#")) continue;
-      if (v && typeof v === "object" && v.uid) out.add(v.uid);
-    }
-    return out;
+    if (!existsSync(f)) return {};
+    return JSON.parse(readFileSync(f, "utf8"));
   } catch {
-    return new Set();
+    return {};
   }
+}
+
+/**
+ * Put one account into magpie's list.
+ *
+ * magpie keys the first account by the provider id and every one after it by
+ * `workbuddy#<6 random>`. The file is backed up next to itself before it is
+ * touched, because this is the file that holds every sign-in on the machine.
+ */
+export function addAccount(rec) {
+  const dir = configDir();
+  const f = join(dir, "plugin-auth.json");
+  const store = readStore();
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  if (existsSync(f)) copyFileSync(f, join(dir, `plugin-auth.json.bak-import-${stamp}`));
+
+  let key;
+  if (!store.workbuddy) key = "workbuddy";
+  else {
+    do {
+      key = "workbuddy#" + Math.random().toString(36).slice(2, 8).padEnd(6, "0");
+    } while (store[key]);
+  }
+
+  store[key] = {
+    type: "oauth",
+    refresh: rec.refresh,
+    access: rec.access,
+    expires: rec.expires,
+    accountId: rec.accountId,
+    uid: rec.uid,
+    domain: rec.domain,
+    refreshExpiresAt: rec.refreshExpiresAt,
+    tokenType: rec.tokenType || "Bearer",
+    ...(rec.enterpriseId ? { enterpriseId: rec.enterpriseId } : {}),
+  };
+
+  writeFileSync(f, JSON.stringify(store, null, 2));
+  return { key, backup: existsSync(join(dir, `plugin-auth.json.bak-import-${stamp}`)) ? `plugin-auth.json.bak-import-${stamp}` : null };
 }
 
 /** The clipboard, which is where a pasted credential lands. */
