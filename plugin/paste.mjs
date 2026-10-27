@@ -1,30 +1,35 @@
-// 「粘贴凭据登录」这一个方式：读剪贴板 / 文件，把凭据交给 magpie 保存。
+// 「粘贴凭据登录」这一个方式：把凭据交回 magpie 保存。
 //
 // 和别的登录方式一样，它最后要交回 magpie 一个凭据对象，magpie 自己写进
 // 账号列表 —— 所以导入的账号和浏览器登录的账号在同一个列表、同一张卡片。
 //
-// 区别在于入口不是浏览器：凭据已经在手上了，直接读剪贴板就行。插件的
-// authorize() 跑在 magpie 宿主进程里，读得到剪贴板。
+// 入口不是浏览器，是输入框：这个方式声明了 prompts，magpie 会先弹一个
+// 多行框让人把凭据粘进去，再调用 authorize()。框留空的话才去看剪贴板和
+// WPT_FILE，方便脚本直接用。
 
 import { existsSync, readFileSync } from "node:fs";
 import { parsePayload, readClipboard, renew, decodeJwt, knownUids, displayName } from "./auth-store.js";
 
 /** Text the person is most likely to mean, in the order worth trying. */
-function credentialText() {
+function credentialText(inputs) {
+  // What was typed or pasted into the field magpie showed.
+  const typed = typeof inputs?.credential === "string" ? inputs.credential.trim() : "";
+  if (typed) return { source: "输入框", text: typed };
+
   // A path, for scripts: WPT_FILE=cred.json magpie plugin login workbuddy
   const p = process.env.WPT_FILE;
   if (p && existsSync(p)) return { source: p, text: readFileSync(p, "utf8") };
 
-  // Otherwise the clipboard, which is where a pasted credential lands.
+  // Left empty, the clipboard is the next place a credential lands.
   const clip = readClipboard();
-  if (clip) return { source: "剪贴板", text: clip };
+  if (clip && clip.trim()) return { source: "剪贴板", text: clip };
 
   throw new Error(
     [
-      "没读到剪贴板里有什么内容。",
+      "没有内容可以读。",
       "",
-      "  1. 把凭据 JSON 全文复制到剪贴板，再点一次「粘贴凭据登录」",
-      "  2. 或者指定文件：",
+      "  把凭据 JSON 粘到框里再点「登录」。",
+      "  框留空时会去读剪贴板；也可以指定文件：",
       '       Windows        set "WPT_FILE=D:\\cred.json"',
       "       PowerShell     $env:WPT_FILE='D:\\cred.json'",
       "       macOS / Linux  WPT_FILE=/cred.json magpie plugin login workbuddy",
@@ -39,14 +44,19 @@ function credentialText() {
  * callback() that finishes. Everything is done in authorize() because magpie
  * only reports a method as failed when authorize() rejects — a failing
  * callback would still print a tick.
+ *
+ * `inputs` is what the method's `prompts` were answered with. The credential
+ * is one of those answers: a sign-in method that reads only the clipboard
+ * starts by itself the moment it is clicked, which gives the person nowhere
+ * to put anything. Asking first is a field they can paste into.
  */
-export async function authorize() {
-  const { source, text } = await credentialText();
+export async function authorize(inputs) {
+  const { source, text } = credentialText(inputs);
   const parsed = parsePayload(text);
   if (parsed.error) {
     const hint =
-      source === "剪贴板"
-        ? "\n\n剪贴板里现在不是一份凭据。先把凭据 JSON 全文复制，再点一次；或者用 WPT_FILE 指向文件：\n  set \"WPT_FILE=D:\\cred.json\""
+      source === "输入框"
+        ? "\n\n框里的内容不是一份凭据。粘完整的 JSON，或者复制到剪贴板后留空再点。"
         : "";
     throw new Error(`读不出凭据（${source}）：${parsed.error}${hint}`);
   }

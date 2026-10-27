@@ -72,7 +72,25 @@ export const WorkBuddyPasteLogin = async (ctx) => {
     ...hooks,
     auth: {
       ...hooks.auth,
-      methods: [...(hooks.auth?.methods ?? []), { type: "oauth", label: LABEL, authorize }],
+      methods: [
+        ...(hooks.auth?.methods ?? []),
+        {
+          type: "oauth",
+          label: LABEL,
+          // What magpie asks before authorize() runs. Without this the method
+          // starts the moment it is clicked and there is nowhere to put the
+          // credential — the field is the whole point.
+          prompts: [
+            {
+              type: "text",
+              key: "credential",
+              message: "把凭据 JSON 粘到这里",
+              placeholder: '{"account":{…},"auth":{"accessToken":"…","refreshToken":"…"}}',
+            },
+          ],
+          authorize,
+        },
+      ],
     },
   };
 };
