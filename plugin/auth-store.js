@@ -44,8 +44,10 @@ export function decodeJwt(token) {
  * otherwise appear in the list as a row that names nothing.
  */
 export function displayName(rec, claims) {
+  // A stated nickname wins, but a bare phone number is not a name: it is
+  // masked like one, so the list never shows a whole number.
   const nick = str(rec?.nickname) || str(claims?.nickname);
-  if (nick) return nick;
+  if (nick) return maskHandle(nick);
 
   const pu = str(claims?.preferred_username) || str(rec?.preferred_username);
   if (pu) return maskHandle(pu);
@@ -66,38 +68,88 @@ function toMs(v) {
   return n < 1e12 ? Math.round(n * 1000) : Math.round(n);
 }
 
+/**
+ * The first of several spellings that holds a value.
+ *
+ * Credential files come from a handful of tools and each spells the same
+ * field its own way: `accessToken` / `access_token`, `expiresAt` /
+ * `expires_at` / `expiresIn` / `expiry`, `refreshExpiresAt` /
+ * `refresh_expires_at`. Reading only one spelling silently drops the others —
+ * which is how an `expires_at` of 1795501652000 ends up replaced by whatever
+ * the JWT says, a second either side.
+ */
+function pick(...vals) {
+  for (const v of vals) {
+    const s = str(v);
+    if (s) return s;
+  }
+  return "";
+}
+
+function pickNum(...vals) {
+  for (const v of vals) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+
+/** `expiresIn` is a duration, not a timestamp: seconds from now. */
+function fromDuration(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Date.now() + (n < 1e12 ? n * 1000 : n);
+}
+
 /** One credential out of one object, or null when it holds no token. */
 function fromObject(o) {
   if (!isObj(o)) return null;
   const auth = isObj(o.auth) ? o.auth : isObj(o.credential) ? o.credential : o;
   const account = isObj(o.account) ? o.account : isObj(o.user) ? o.user : {};
 
-  const access = str(auth.accessToken) || str(auth.access_token) || str(o.accessToken) || "";
-  const refresh = str(auth.refreshToken) || str(auth.refresh_token) || str(o.refreshToken) || str(o.refresh_token) || "";
+  // Every field is read from either the nested auth block or the object
+  // itself, in both spellings, so a flat row and a nested file read the same.
+  const access = pick(auth.accessToken, auth.access_token, o.accessToken, o.access_token, auth.token, o.token);
+  const refresh = pick(auth.refreshToken, auth.refresh_token, o.refreshToken, o.refresh_token, auth.refresh, o.refresh);
   if (!access && !refresh) return null;
 
   const ac = decodeJwt(access);
   const rc = decodeJwt(refresh);
 
-  const uid = str(account.uid) || str(auth.uid) || str(o.uid) || str(ac?.sub) || str(rc?.sub) || "";
-  let domain = str(auth.domain) || str(o.domain) || "";
+  const uid = pick(account.uid, auth.uid, o.uid, account.sub, ac?.sub, rc?.sub);
+
+  let domain = pick(auth.domain, o.domain, auth.host, o.host);
   if (!domain) {
-    const iss = str(ac?.iss) || str(rc?.iss);
+    const iss = pick(ac?.iss, rc?.iss);
     try {
       if (iss) domain = new URL(iss).host;
     } catch {}
   }
+
+  // A nickname the file states wins; a bare phone number is not a nickname,
+  // so it is left for displayName() to mask like one.
+  const nickname = pick(account.nickname, auth.nickname, o.nickname, o.name, o.display_name);
+
+  const expires =
+    toMs(pickNum(auth.expiresAt, auth.expires_at, o.expiresAt, o.expires_at, o.expiry, o.expiration)) ||
+    fromDuration(pickNum(auth.expiresIn, auth.expires_in, o.expiresIn, o.expires_in)) ||
+    toMs(ac?.exp);
+
+  const refreshExpiresAt =
+    toMs(pickNum(auth.refreshExpiresAt, auth.refresh_expires_at, o.refreshExpiresAt, o.refresh_expires_at)) ||
+    fromDuration(pickNum(auth.refreshExpiresIn, auth.refresh_expires_in, o.refreshExpiresIn, o.refresh_expires_in, o.refresh_expiry)) ||
+    toMs(rc?.exp);
 
   return {
     access,
     refresh,
     uid,
     domain: domain || "www.codebuddy.cn",
-    tokenType: str(auth.tokenType) || str(o.tokenType) || "Bearer",
-    nickname: str(account.nickname) || str(ac?.preferred_username) || "",
-    enterpriseId: str(account.enterpriseId) || str(auth.enterpriseId) || str(o.enterpriseId) || str(ac?.enterprise_id) || "",
-    expires: toMs(auth.expiresAt) || toMs(o.expiresAt) || (ac?.exp ? toMs(ac.exp) : 0),
-    refreshExpiresAt: toMs(auth.refreshExpiresAt) || toMs(o.refreshExpiresAt) || (rc?.exp ? toMs(rc.exp) : 0),
+    tokenType: pick(auth.tokenType, auth.token_type, o.tokenType, o.token_type) || "Bearer",
+    nickname,
+    enterpriseId: pick(account.enterpriseId, account.enterprise_id, auth.enterpriseId, o.enterpriseId, o.enterprise_id, ac?.enterprise_id),
+    expires,
+    refreshExpiresAt,
   };
 }
 
