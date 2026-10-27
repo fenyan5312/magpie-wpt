@@ -1,0 +1,20 @@
+{
+  "name": "magpie-wpt-import",
+  "version": "0.3.0",
+  "description": "在 magpie 的 WorkBuddy 登录方式里加一个「粘贴凭据登录」（仅供学习与交流）",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "paste.mjs",
+    "auth-store.js",
+    "README.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "workbuddy"
+  ],
+  "license": "MIT"
+}

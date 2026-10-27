@@ -203,46 +203,6 @@ export function readStore() {
   }
 }
 
-/**
- * Put one account into magpie's list.
- *
- * magpie keys the first account by the provider id and every one after it by
- * `workbuddy#<6 random>`. The file is backed up next to itself before it is
- * touched, because this is the file that holds every sign-in on the machine.
- */
-export function addAccount(rec) {
-  const dir = configDir();
-  const f = join(dir, "plugin-auth.json");
-  const store = readStore();
-
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  if (existsSync(f)) copyFileSync(f, join(dir, `plugin-auth.json.bak-import-${stamp}`));
-
-  let key;
-  if (!store.workbuddy) key = "workbuddy";
-  else {
-    do {
-      key = "workbuddy#" + Math.random().toString(36).slice(2, 8).padEnd(6, "0");
-    } while (store[key]);
-  }
-
-  store[key] = {
-    type: "oauth",
-    refresh: rec.refresh,
-    access: rec.access,
-    expires: rec.expires,
-    accountId: rec.accountId,
-    uid: rec.uid,
-    domain: rec.domain,
-    refreshExpiresAt: rec.refreshExpiresAt,
-    tokenType: rec.tokenType || "Bearer",
-    ...(rec.enterpriseId ? { enterpriseId: rec.enterpriseId } : {}),
-  };
-
-  writeFileSync(f, JSON.stringify(store, null, 2));
-  return { key, backup: existsSync(join(dir, `plugin-auth.json.bak-import-${stamp}`)) ? `plugin-auth.json.bak-import-${stamp}` : null };
-}
-
 /** The clipboard, which is where a pasted credential lands. */
 export function readClipboard() {
   const tries =

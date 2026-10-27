@@ -1,9 +1,8 @@
 node_modules/
 *.log
 
-# Credentials must never be committed. The tool reads them from the clipboard
-# or from a file path given on the command line; nothing in this repo should
-# hold one, and magpie's own store lives in ~/.config/magpie, outside the tree.
+# Credentials must never be committed: the plugin reads them from the
+# clipboard or WPT_FILE, and magpie's own store lives in ~/.config/magpie.
 *.json.backup*
 plugin-auth*.json
 logins*.json
@@ -11,4 +10,3 @@ cred*.json
 *.info
 .env
 .env.*
-!.env.example
