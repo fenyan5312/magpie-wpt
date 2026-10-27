@@ -62,10 +62,40 @@ function maskHandle(v) {
   return v;
 }
 
+/**
+ * A time in any of the spellings the exporters use: epoch seconds, epoch
+ * milliseconds, or an ISO-8601 string. `recordedAt` in one backup is the last
+ * of those, and read as a number it is NaN — silently dropped.
+ */
 function toMs(v) {
+  if (typeof v === "string") {
+    const iso = Date.parse(v.trim());
+    if (Number.isFinite(iso)) return iso;
+  }
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) return 0;
-  return n < 1e12 ? Math.round(n * 1000) : Math.round(n);
+  // epoch seconds (~1e9), milliseconds (~1e12), microseconds (~1e15): the
+  // digit count says which. A value past that is not a date anyone wrote on
+  // purpose, so it is dropped rather than turned into a year 58867.
+  if (n < 1e12) return Math.round(n * 1000);
+  if (n < 1e14) return Math.round(n);
+  if (n < 1e17) return Math.round(n / 1000);
+  return 0;
+}
+
+/**
+ * The first candidate that holds a time, as milliseconds.
+ *
+ * Separate from `pickNum` because a time may be written as a string
+ * (`"2026-11-24T06:27:32Z"`), which `Number()` turns into NaN — the field
+ * would then look absent and fall through to the JWT's own value.
+ */
+function pickMs(...vals) {
+  for (const v of vals) {
+    const ms = toMs(v);
+    if (ms > 0) return ms;
+  }
+  return 0;
 }
 
 /**
@@ -107,9 +137,21 @@ function fromObject(o) {
   const auth = isObj(o.auth) ? o.auth : isObj(o.credential) ? o.credential : o;
   const account = isObj(o.account) ? o.account : isObj(o.user) ? o.user : {};
 
+  // WorkBuddy 5.6+ writes the token as an object (`{$wbEncrypted: 1, …}`)
+  // rather than a string. Nothing here can decrypt it, but saying so beats
+  // "没找到 accessToken", which reads as the person's mistake.
+  const sealed = [auth.accessToken, o.accessToken, auth.refreshToken, o.refreshToken].some(
+    (v) => isObj(v) && ("$wbEncrypted" in v || "envelope" in v)
+  );
+  if (sealed) {
+    const e = new Error("ENCRYPTED");
+    e.sealed = true;
+    throw e;
+  }
+
   // Every field is read from either the nested auth block or the object
   // itself, in both spellings, so a flat row and a nested file read the same.
-  const access = pick(auth.accessToken, auth.access_token, o.accessToken, o.access_token, auth.token, o.token);
+  const access = pick(auth.accessToken, auth.access_token, o.accessToken, o.access_token, auth.access, o.access, auth.token, o.token);
   const refresh = pick(auth.refreshToken, auth.refresh_token, o.refreshToken, o.refresh_token, auth.refresh, o.refresh);
   if (!access && !refresh) return null;
 
@@ -127,8 +169,20 @@ function fromObject(o) {
   }
 
   // A nickname the file states wins; a bare phone number is not a nickname,
-  // so it is left for displayName() to mask like one.
-  const nickname = pick(account.nickname, auth.nickname, o.nickname, o.name, o.display_name);
+  // so it is left for displayName() to mask like one. The desktop export
+  // usually carries no nickname at all and only a `phoneNumber`, which is
+  // what the account is then known by.
+  const nickname = pick(
+    account.nickname,
+    auth.nickname,
+    o.nickname,
+    o.name,
+    o.display_name,
+    account.phoneNumber,
+    account.phone_number,
+    o.phoneNumber,
+    o.phone_number
+  );
 
   // magpie's own store spells the timestamps `expires` / `refreshExpiresAt`
   // with bare `access` / `refresh`, so it is read too — that is what a backup
@@ -138,12 +192,12 @@ function fromObject(o) {
   // `expiresIn` at once: `expiresAt` is the absolute time and wins; a bare
   // `expiresIn` is a duration counted from now.
   const expires =
-    toMs(pickNum(auth.expiresAt, auth.expires_at, o.expiresAt, o.expires_at, o.expiry, o.expiration, o.expires)) ||
+    pickMs(auth.expiresAt, auth.expires_at, o.expiresAt, o.expires_at, o.expiry, o.expiration, o.expires) ||
     fromDuration(pickNum(auth.expiresIn, auth.expires_in, o.expiresIn, o.expires_in)) ||
     toMs(ac?.exp);
 
   const refreshExpiresAt =
-    toMs(pickNum(auth.refreshExpiresAt, auth.refresh_expires_at, o.refreshExpiresAt, o.refresh_expires_at, o.refresh_expiry)) ||
+    pickMs(auth.refreshExpiresAt, auth.refresh_expires_at, o.refreshExpiresAt, o.refresh_expires_at, o.refresh_expiry) ||
     fromDuration(pickNum(auth.refreshExpiresIn, auth.refresh_expires_in, o.refreshExpiresIn, o.refresh_expires_in)) ||
     toMs(rc?.exp);
 
@@ -174,9 +228,15 @@ export function parsePayload(raw) {
   }
 
   const out = [];
+  let sealed = false;
   const push = (o) => {
-    const r = fromObject(o);
-    if (r) out.push(r);
+    try {
+      const r = fromObject(o);
+      if (r) out.push(r);
+    } catch (e) {
+      if (e.sealed) sealed = true;
+      else throw e;
+    }
   };
 
   if (Array.isArray(data)) data.forEach(push);
@@ -184,18 +244,49 @@ export function parsePayload(raw) {
     push(data);
     if (Array.isArray(data.accounts)) data.accounts.forEach(push);
     for (const k of ["data", "list", "items"]) if (Array.isArray(data[k])) data[k].forEach(push);
+
+    // One level further down, a whole payload wrapped twice:
+    // {"data": {"accounts": [...]}}.
+    for (const k of ["data", "result", "payload"]) {
+      const inner = data[k];
+      if (!isObj(inner)) continue;
+      push(inner);
+      if (Array.isArray(inner.accounts)) inner.accounts.forEach(push);
+      for (const k2 of ["list", "items"]) if (Array.isArray(inner[k2])) inner[k2].forEach(push);
+    }
+
+    // magpie's own store: an object whose keys are provider ids and whose
+    // values are the credentials. A backup of it is the file to restore, so
+    // every entry that holds a token is read — this provider's only:
+    // `workbuddy-ai` is a different vendor with its own domain, and taking
+    // one of its accounts as a `workbuddy` one would be wrong.
+    for (const [key, v] of Object.entries(data)) {
+      if (!isObj(v)) continue;
+      if (!/^workbuddy(#|$)/.test(key)) continue;
+      push(v);
+    }
   }
 
   const seen = new Set();
   const uniq = [];
   for (const r of out) {
-    const k = `${r.uid}|${r.refresh.slice(0, 32)}`;
+    // A uid is the account; a rotated refresh token for the same account is
+    // still the same account, so the uid alone decides a duplicate. Records
+    // without one fall back to what they do carry.
+    const k = r.uid || `${r.refresh.slice(0, 32)}|${r.access.slice(0, 32)}`;
     if (seen.has(k)) continue;
     seen.add(k);
     uniq.push(r);
   }
 
-  return { accounts: uniq, error: uniq.length ? null : "没找到 WorkBuddy 凭据字段（accessToken / refreshToken）" };
+  return {
+    accounts: uniq,
+    error: uniq.length
+      ? null
+      : sealed
+      ? "这份凭据的 token 是加密的（{$wbEncrypted}），这里解不开。请在 magpie 里用桌面端登录方式，或换一份明文凭据。"
+      : "没找到 WorkBuddy 凭据字段（accessToken / refreshToken）",
+  };
 }
 
 /** Spend the refresh token once, so a dead credential fails here and now. */

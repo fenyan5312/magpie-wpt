@@ -64,8 +64,9 @@ export async function authorize(inputs) {
   // Say what was found before picking, so a file holding several accounts is
   // not silently reduced to its first one.
   if (parsed.accounts.length > 1) {
-    const names = parsed.accounts.map((a) => displayName(a, decodeJwt(a.access) || {})).join("、");
-    console.log(`这份内容里有 ${parsed.accounts.length} 个账号（${names}），只导入第一个：${displayName(parsed.accounts[0], {})}`);
+    const nameOf = (a) => displayName(a, decodeJwt(a.access) || {});
+    const names = parsed.accounts.map(nameOf).join("、");
+    console.log(`这份内容里有 ${parsed.accounts.length} 个账号（${names}），只导入第一个：${nameOf(parsed.accounts[0])}`);
   }
 
   const rec = parsed.accounts[0];
