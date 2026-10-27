@@ -86,21 +86,36 @@ WPT_FILE=/path/cred.json
 
 ## 支持的凭据格式
 
+这几个来源的字段拼法不一样，插件全都读：
+
 | 来源 | 形态 |
 |---|---|
-| `workbuddy-<uid>.json` | `{"account": {...}, "auth": {"accessToken", "refreshToken", ...}}` |
-| `cockpit-<uid>.json` | 数组或 `{"accounts": [...]}`，sub2api 风格 |
-| `workbuddy-desktop.info` | 桌面端导出，字段为驼峰 |
-| 裸对象 | 顶层的 `accessToken` / `access_token` + `refreshToken` / `refresh_token` |
+| `workbuddy-<uid>.json` | `{"account": {uid, nickname}, "auth": {accessToken, refreshToken, expiresAt, domain}}` |
+| sub2api / cockpit 扁平数组 | `[{uid, nickname, domain, expires_at, access_token, refresh_token}]` |
+| `workbuddy-desktop.info` | 桌面端导出，`account` + `auth` + `accounts[]`，字段驼峰 |
+| magpie 存储备份 | `plugin-auth.json` 里的单条，用 `access` / `refresh` / `expires` |
+| 裸对象 | 顶层直接放上述任一拼法 |
+
+**字段拼法都能读**（大小写、驼峰/下划线、有无 Token 后缀）：
+
+| 含义 | 认得的写法 |
+|---|---|
+| access | `accessToken` `access_token` `access` `token` |
+| refresh | `refreshToken` `refresh_token` `refresh` |
+| 到期 | `expiresAt` `expires_at` `expires` `expiry` `expiration`；或时长 `expiresIn` `expires_in` |
+| refresh 到期 | 同上，`refreshExpiresAt` / `refresh_expires_at` / `refreshExpiresIn` … |
+
+时间戳 **秒和毫秒都认**（10 位 / 13 位自动判断）。`expiresIn` 是时长不是时间点，会换算。
+同时有 `expiresAt` 和 `expiresIn` 时以 `expiresAt` 为准。
 
 字段缺失时会从 JWT 里补 `uid`（`sub`）和 `domain`（`iss`）。
-一份凭据里含多个账号时只导入第一个。
+一份凭据里含多个账号时只导入第一个，并且会先告诉你里面有几个。
 
 ## 行为约定
 
 - **必须带 refresh token。** 只有 access token 的凭据会被拒绝——它一小时就死了。
 - **登录前会真的刷新一次。** 凭据失效在这里就报错，不会存进去一个连不上的账号。
-- **重复账号会被拒绝。** magpie 本身不去重，同一个文件粘两次会列出两个账号，而且第二份的 refresh token 已经被第一份花掉了。登录前会检查 uid，已有的直接拒绝。
+- **重复账号会被拒绝。** magpie 本身不去重，同一个文件粘两次会列出两个账号，而且第二份的 refresh token 已经被第一份花掉了。登录前会检查 uid，已有的直接拒绝；如果 magpie 里那份比粘的还新，会顺便告诉你，因为覆盖等于降级。
 - **refresh token 是一次性的。** 每次登录都会轮换。不要把同一个账号的同一份凭据同时喂给两个程序。
 
 ## 账号名字
