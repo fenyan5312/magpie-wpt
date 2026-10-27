@@ -8,7 +8,7 @@
 // WPT_FILE，方便脚本直接用。
 
 import { existsSync, readFileSync } from "node:fs";
-import { parsePayload, readClipboard, renew, decodeJwt, knownUids, displayName } from "./auth-store.js";
+import { parsePayload, readClipboard, renew, decodeJwt, knownUids, displayName, readStore } from "./auth-store.js";
 
 /** Text the person is most likely to mean, in the order worth trying. */
 function credentialText(inputs) {
@@ -61,6 +61,13 @@ export async function authorize(inputs) {
     throw new Error(`读不出凭据（${source}）：${parsed.error}${hint}`);
   }
 
+  // Say what was found before picking, so a file holding several accounts is
+  // not silently reduced to its first one.
+  if (parsed.accounts.length > 1) {
+    const names = parsed.accounts.map((a) => displayName(a, decodeJwt(a.access) || {})).join("、");
+    console.log(`这份内容里有 ${parsed.accounts.length} 个账号（${names}），只导入第一个：${displayName(parsed.accounts[0], {})}`);
+  }
+
   const rec = parsed.accounts[0];
   if (!rec.refresh) {
     throw new Error("这份凭据里没有 refresh token，登录会立刻过期。请换一份完整的凭据。");
@@ -73,7 +80,13 @@ export async function authorize(inputs) {
   // would list the account twice — and the newer copy's refresh token would
   // already have been spent by the older one.
   if (uid && knownUids().has(uid)) {
-    throw new Error(`这个账号已经在 magpie 里了（${uid.slice(0, 8)}…），不用再导入。`);
+    const old = readStore();
+    const kept = Object.values(old).find((v) => v && v.uid === uid);
+    const keptNote =
+      kept?.expires && rec.expires && kept.expires > rec.expires
+        ? `\n\n顺带一提：magpie 里那份比这次粘的还新（${new Date(kept.expires).toISOString().slice(0, 16)} vs ${new Date(rec.expires).toISOString().slice(0, 16)}），覆盖反而是降级，所以没动它。`
+        : "";
+    throw new Error(`这个账号已经在 magpie 里了（${uid.slice(0, 8)}…），不用再导入。${keptNote}`);
   }
 
   // Prove it works before reporting success, and take the fresh tokens.
