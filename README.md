@@ -2,8 +2,10 @@
 
 在 WorkBuddy 的登录方式里加一个「粘贴凭据登录」——凭据已经在手上时，不走浏览器，粘进插件自己开的窗口就行（手动输入也可以，不依赖剪贴板）。
 
-> **仅供学习与交流。** 本项目只做本地凭据格式转换与登录，不含任何绕过、代理、共享或转售能力。
+> **仅供交流学习与逆向研究使用。** 本项目只做本地凭据格式转换与登录，不含任何绕过、代理、共享或转售能力。
 > 请只用于你自己的账号。使用产生的一切后果由使用者自负。
+
+插件的独立说明（安装、支持的输入、行为约定）见 [`plugin/README.md`](plugin/README.md)。
 
 ## 入口在哪
 
@@ -105,6 +107,12 @@ WPT_FILE=/path/cred.json
 | `workbuddy-desktop.info` | 桌面端导出，`account` + `auth` + `accounts[]`，字段驼峰 |
 | magpie 存储备份 | `plugin-auth.json` 里的单条，用 `access` / `refresh` / `expires` |
 | 裸对象 | 顶层直接放上述任一拼法 |
+| **WorkBuddy API key** | `ck_…` / `pt_…`，或任意一个单独的 key；也可以放在 `{"key": "…"}` / `{"apiKey": "…"}` / `{"ck": "…"}` 里 |
+| **Cookie / 请求头** | `access_token=…; refresh_token=…`、`Cookie: …`、`authorization: Bearer …`、`x-refresh-token: …`、`k=v&k=v`、curl 的 `-H '…'`、浏览器扩展导出的 `[{name,value}]` |
+
+**API key 与登录凭据是两种账号。** 粘贴 `ck_…` 这类 key 时，插件按 magpie 的 `{type:"api", key}` 存，和「WorkBuddy API key」登录方式存的是同一种账号；key 不会过期，也不会续期，插件不在这里联网校验它（WorkBuddy 的 `/v3/config` 对任何 key 都回 200，验不出来），第一次真实请求被拒时才会暴露。
+
+**Cookie 必须带着 token 才有用。** 只有会话值的 Cookie（`sessionid=…` 之类）换不到 token，窗口会直接说清；请在 WorkBuddy 网页登录后从站点数据里复制 `accessToken` 与 `refreshToken`，或改用 API key。
 
 **字段拼法都能读**（大小写、驼峰/下划线、有无 Token 后缀）：
 
@@ -123,7 +131,7 @@ WPT_FILE=/path/cred.json
 
 ## 行为约定
 
-- **必须带 refresh token。** 只有 access token 的凭据会被拒绝——它一小时就死了。
+- **登录凭据必须带 refresh token。** 只有 access token 的凭据会被拒绝——它一小时就死了。API key（`ck_…`）是另一回事：它没有 refresh，也不续期，直接按 API key 账号导入。
 - **登录前会真的刷新一次。** 凭据失效在窗口里当场报错，不会存进去一个连不上的账号，窗口也不会先报成功。
 - **重复账号会被拒绝。** magpie 本身不去重，同一个文件粘两次会列出两个账号，而且第二份的 refresh token 已经被第一份花掉了。登录前会检查 uid，已有的直接拒绝；如果 magpie 里那份比粘的还新，会顺便告诉你，因为覆盖等于降级。
 - **refresh token 是一次性的。** 每次登录都会轮换。不要把同一个账号的同一份凭据同时喂给两个程序。

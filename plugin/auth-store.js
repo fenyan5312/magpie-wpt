@@ -36,6 +36,58 @@ export function decodeJwt(token) {
   }
 }
 
+/** A JWT: three dot-separated segments. */
+function isJwt(v) {
+  return typeof v === "string" && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/.test(v);
+}
+
+/**
+ * A WorkBuddy API key.
+ *
+ * Keys made on the keys page most often start with `ck_` / `pt_`, but
+ * WorkBuddy's own CLI accepts any key — those two prefixes only decide
+ * whether the model list comes from `/v3/config`. So anything that is one
+ * bare token (no `=`, `:`, `;`, whitespace or JWT dots) and is long enough
+ * to be a key is taken as one.
+ */
+export function looksLikeApiKey(v) {
+  const s = str(v);
+  return !!s && s.length >= 12 && !/[.;=:\s]/.test(s) && /^[A-Za-z0-9._~+/-]+$/.test(s) && !isJwt(s);
+}
+
+/** A key as a credential record, the way the community plugin's keyAccount has it. */
+function keyRecord(key, { uid, domain, nickname } = {}) {
+  const k = str(key);
+  if (!k) return null;
+  return {
+    kind: "key",
+    key: k,
+    // Not a token: the plugin's sign() sends it as X-API-Key, and its
+    // keyAccount derives the same uid and no domain.
+    access: k,
+    refresh: "",
+    uid: str(uid) || "anonymous_" + k.slice(-8),
+    domain: str(domain),
+    tokenType: "Bearer",
+    nickname: str(nickname) || "WorkBuddy API key",
+    expires: 0,
+    refreshExpiresAt: 0,
+  };
+}
+
+const unquote = (v) => {
+  const s = String(v ?? "").trim();
+  return /^(['"]).*\1$/.test(s) ? s.slice(1, -1).trim() : s;
+};
+
+function decodePart(v) {
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+}
+
 /**
  * What to call an account in magpie's list.
  *
@@ -149,10 +201,42 @@ function fromObject(o) {
     throw e;
   }
 
+  // A credential written as JSON but holding a key: `{key}`, `{apiKey}`,
+  // `{ck}` (what some exporters call it), or OpenCode's `{type:"api", key}`.
+  const statedKey = pick(
+    auth.key,
+    auth.apiKey,
+    auth.api_key,
+    auth["api-key"],
+    o.key,
+    o.apiKey,
+    o.api_key,
+    o["api-key"],
+    account.key,
+    looksLikeApiKey(o.ck) ? o.ck : ""
+  );
+
+  // A JSON object whose `ck` / `cookie` / `Cookie` field is a Cookie header
+  // rather than a token. Re-read it as the text it is.
+  const cookieText = pick(o.ck, o.cookie, o.Cookie, auth.cookie);
+  if (!statedKey && cookieText && /[=;]/.test(cookieText)) {
+    const fromCookie = parseText(cookieText);
+    if (fromCookie.accounts.length) return fromCookie.accounts[0];
+  }
+
   // Every field is read from either the nested auth block or the object
   // itself, in both spellings, so a flat row and a nested file read the same.
   const access = pick(auth.accessToken, auth.access_token, o.accessToken, o.access_token, auth.access, o.access, auth.token, o.token);
   const refresh = pick(auth.refreshToken, auth.refresh_token, o.refreshToken, o.refresh_token, auth.refresh, o.refresh);
+
+  // A key named as `token` / `access` still a key: nothing renews it, and
+  // sent as a token it would be refused for want of X-API-Key.
+  if (!refresh && looksLikeApiKey(access)) {
+    return keyRecord(access, { uid: account.uid ?? o.uid, domain: auth.domain ?? o.domain, nickname: account.nickname ?? o.nickname });
+  }
+  if (!access && !refresh && statedKey && looksLikeApiKey(statedKey)) {
+    return keyRecord(statedKey, { uid: account.uid ?? o.uid, domain: auth.domain ?? o.domain, nickname: account.nickname ?? o.nickname });
+  }
   if (!access && !refresh) return null;
 
   const ac = decodeJwt(access);
@@ -214,6 +298,115 @@ function fromObject(o) {
   };
 }
 
+/**
+ * A credential written as text rather than JSON.
+ *
+ * The exporters, and people copying from DevTools or curl, hand over the
+ * same sign-in in other spellings: a `Cookie:` header, a block of headers,
+ * a `k=v&k=v` string, or a bare API key (`ck_…`). None of those is JSON, so
+ * before this they all ended in "不是合法的 JSON".
+ */
+export function parseText(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return { accounts: [], error: "内容是空的" };
+
+  // One bare token, with no field syntax around it.
+  if (!/[;=&:\s]/.test(text)) {
+    if (looksLikeApiKey(text)) return { accounts: [keyRecord(text)], error: null };
+    if (isJwt(text)) {
+      const rec = fromObject({ accessToken: text });
+      if (rec) return { accounts: [rec], error: null };
+    }
+    return { accounts: [], error: "这段内容既不是凭据 JSON，也不是 API key（ck_…）。" };
+  }
+
+  const fields = new Map();
+  const put = (name, value) => {
+    const k = unquote(name).trim().toLowerCase();
+    const v = decodePart(unquote(value)).trim();
+    if (k && v && !fields.has(k)) fields.set(k, v);
+  };
+
+  // curl's -H 'Name: value' arguments, then the rest of the text with
+  // those arguments taken out (their words aren't fields).
+  const chunks = [];
+  const curlHead = /(?:^|\s)(?:-H|--header)\s+(['"])([\s\S]*?)\1/g;
+  for (let m; (m = curlHead.exec(text)); ) chunks.push(m[2]);
+  chunks.push(text.replace(curlHead, " "));
+
+  for (const chunk of chunks) {
+    for (const line of chunk.split(/\r?\n/)) {
+      // Netscape cookies.txt: domain, flag, path, secure, expiry, name, value.
+      const tsv = line.split("\t");
+      if (tsv.length >= 7) {
+        put(tsv[tsv.length - 2], tsv[tsv.length - 1]);
+        continue;
+      }
+
+      const cookie = line.replace(/^\s*(?:set-)?cookie\s*:\s*/i, "").replace(/^\s*header\s*:\s*/i, "").trim();
+      if (/^bearer\s+\S+$/i.test(cookie)) {
+        put("authorization", cookie);
+        continue;
+      }
+      for (const part of cookie.split(/[;&]/)) {
+        const p = part.trim();
+        if (!p) continue;
+        const eq = p.indexOf("=");
+        const co = p.indexOf(":");
+        // `a=b` before `a: b`: a value can hold a colon, a name cannot.
+        if (eq > 0 && (co < 0 || eq < co)) put(p.slice(0, eq), p.slice(eq + 1));
+        else if (co > 0) put(p.slice(0, co), p.slice(co + 1));
+      }
+    }
+  }
+
+  const get = (...names) => {
+    for (const n of names) {
+      const v = fields.get(n);
+      if (v) return v;
+    }
+    return "";
+  };
+
+  const bearer = get(
+    "access_token",
+    "access-token",
+    "accesstoken",
+    "access",
+    "x-access-token",
+    "token",
+    "authorization"
+  ).replace(/^bearer\s+/i, "");
+  const refresh = get("refresh_token", "refresh-token", "refreshtoken", "refresh", "x-refresh-token");
+  const apiKey = get("x-api-key", "api_key", "api-key", "api key", "apikey", "key");
+  const uid = get("uid", "user_id", "userid", "x-user-id", "sub");
+  const domain = get("domain", "x-domain");
+  const nickname = get("nickname", "name", "phone", "phone_number", "phonenumber");
+  const ck = get("ck");
+
+  if (apiKey && !refresh && looksLikeApiKey(apiKey)) {
+    return { accounts: [keyRecord(apiKey, { uid, domain, nickname })], error: null };
+  }
+  if (bearer && !refresh && looksLikeApiKey(bearer)) {
+    return { accounts: [keyRecord(bearer, { uid, domain, nickname })], error: null };
+  }
+  if (!bearer && !refresh && looksLikeApiKey(ck)) {
+    return { accounts: [keyRecord(ck, { uid, domain, nickname })], error: null };
+  }
+
+  if (bearer || refresh) {
+    const rec = fromObject({ accessToken: bearer, refreshToken: refresh, uid, domain, nickname });
+    if (rec) return { accounts: [rec], error: null };
+  }
+
+  return {
+    accounts: [],
+    error: /cookie|session|skey|p_skey|uins?=/i.test(text)
+      ? "这段 Cookie 里没有 accessToken / refreshToken，也没有 API key。Cookie 本身换不到 token：请在 WorkBuddy 网页登录后从站点数据里复制 accessToken 与 refreshToken，或改用 ck_ 开头的 API key。"
+      : "这段文本里没有 accessToken / refreshToken / API key。",
+  };
+}
+
 /** Any accepted payload (nested, flat array, desktop .info) into credentials. */
 export function parsePayload(raw) {
   let data = raw;
@@ -223,9 +416,13 @@ export function parsePayload(raw) {
     try {
       data = JSON.parse(t);
     } catch {
-      return { accounts: [], error: "不是合法的 JSON" };
+      // Not JSON: a Cookie, a header block, a query string, or a bare key.
+      return parseText(t);
     }
   }
+
+  // A JSON string is still a string.
+  if (typeof data === "string") return parseText(data);
 
   const out = [];
   let sealed = false;
@@ -239,8 +436,13 @@ export function parsePayload(raw) {
     }
   };
 
-  if (Array.isArray(data)) data.forEach(push);
-  else if (isObj(data)) {
+  if (Array.isArray(data)) {
+    // A browser extension's cookie export: [{name, value, domain}, …].
+    if (data.length && data.every((x) => isObj(x) && (x.name || x.key) && x.value !== undefined)) {
+      return parseText(data.map((x) => `${x.name ?? x.key}=${x.value}`).join("; "));
+    }
+    data.forEach(push);
+  } else if (isObj(data)) {
     push(data);
     if (Array.isArray(data.accounts)) data.accounts.forEach(push);
     for (const k of ["data", "list", "items"]) if (Array.isArray(data[k])) data[k].forEach(push);
@@ -273,7 +475,7 @@ export function parsePayload(raw) {
     // A uid is the account; a rotated refresh token for the same account is
     // still the same account, so the uid alone decides a duplicate. Records
     // without one fall back to what they do carry.
-    const k = r.uid || `${r.refresh.slice(0, 32)}|${r.access.slice(0, 32)}`;
+    const k = r.kind === "key" ? `key:${r.key}` : r.uid || `${r.refresh.slice(0, 32)}|${r.access.slice(0, 32)}`;
     if (seen.has(k)) continue;
     seen.add(k);
     uniq.push(r);
@@ -285,7 +487,7 @@ export function parsePayload(raw) {
       ? null
       : sealed
       ? "这份凭据的 token 是加密的（{$wbEncrypted}），这里解不开。请在 magpie 里用桌面端登录方式，或换一份明文凭据。"
-      : "没找到 WorkBuddy 凭据字段（accessToken / refreshToken）",
+      : "没找到 WorkBuddy 凭据字段（accessToken / refreshToken）或 API key",
   };
 }
 
@@ -336,8 +538,19 @@ export async function renew(rec, { fetchImpl = fetch, timeoutMs = 20000 } = {}) 
  */
 export function knownUids() {
   const out = new Set();
-  for (const v of Object.values(readStore())) {
+  for (const [id, v] of Object.entries(readStore())) {
+    if (!/^workbuddy(#|$)/.test(id)) continue;
     if (v && typeof v === "object" && v.uid) out.add(v.uid);
+  }
+  return out;
+}
+
+/** API keys magpie already holds, so the same key is not added twice. */
+export function knownKeys() {
+  const out = new Set();
+  for (const [id, v] of Object.entries(readStore())) {
+    if (!/^workbuddy(#|$)/.test(id)) continue;
+    if (v && typeof v === "object" && v.type === "api" && typeof v.key === "string") out.add(v.key);
   }
   return out;
 }
