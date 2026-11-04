@@ -14,7 +14,7 @@ import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { parsePayload, readClipboard, renew, decodeJwt, knownUids, displayName, readStore } from "./auth-store.js";
+import { parsePayload, readClipboard, renew, decodeJwt, knownUids, knownKeys, displayName, readStore } from "./auth-store.js";
 
 /** The page the window shows. Nothing here is fetched from anywhere. */
 function page(nonce) {
@@ -42,9 +42,11 @@ function page(nonce) {
   .err { color: #d9484a; } .ok { color: #2e9e5b; }
 </style>
 <h1>填入凭据</h1>
-<p>把凭据 JSON 粘进下面的框，点「导入」。成功后窗口会自己关掉。</p>
+<p>把凭据 JSON、Cookie、请求头或 WorkBuddy API key（ck_…）粘进下面的框，点「导入」。成功后窗口会自己关掉。</p>
 <textarea id="t" spellcheck="false" autofocus
-  placeholder='{"account":{…},"auth":{"accessToken":"…","refreshToken":"…"}}'></textarea>
+  placeholder='{"account":{…},"auth":{"accessToken":"…","refreshToken":"…"}}
+或：access_token=…; refresh_token=…
+或：ck_…（WorkBuddy API key）'></textarea>
 <div class="row">
   <button id="go">导入</button>
   <button id="cancel" class="ghost">取消</button>
@@ -219,7 +221,8 @@ export function askInWindow(check, { onReady, opener = open, timeoutMs = 5 * 60 
  *
  * Throws a readable reason instead, so the window can show it verbatim.
  */
-async function prepare(text, source) {  const parsed = parsePayload(text);
+async function prepare(text, source) {
+  const parsed = parsePayload(text);
 
   if (parsed.error) {
     throw new Error(`读不出凭据（${source}）：${parsed.error}`);
@@ -235,8 +238,29 @@ async function prepare(text, source) {  const parsed = parsePayload(text);
   }
 
   const rec = parsed.accounts[0];
+
+  // An API key is a sign-in on its own. Nothing renews it, and magpie keeps
+  // `{key}` as {type:"api", key} (host save(): no refresh, a key) — the shape
+  // the community plugin's keyAccount reads and sends as X-API-Key.
+  if (rec.kind === "key") {
+    if (knownKeys().has(rec.key)) {
+      throw new Error(`这个 API key 已经在 magpie 里了（…${rec.key.slice(-4)}），不用再导入。`);
+    }
+    const tail = rec.key.slice(-4);
+    return {
+      url: "about:blank",
+      // A key isn't validated here: WorkBuddy's own /v3/config answers 200 to
+      // any key, so the only honest check is the first real request.
+      instructions: `已导入 WorkBuddy API key（…${tail}，不会过期；无效的 key 会在第一次请求时被拒绝）`,
+      method: "auto",
+      async callback() {
+        return { type: "success", key: rec.key, accountId: `WorkBuddy API key …${tail}` };
+      },
+    };
+  }
+
   if (!rec.refresh) {
-    throw new Error("这份凭据里没有 refresh token，登录会立刻过期。请换一份完整的凭据。");
+    throw new Error("这份凭据里没有 refresh token，登录会立刻过期。请换一份完整的凭据，或直接粘贴 WorkBuddy 的 API key（ck_ 开头）。");
   }
 
   const uid = rec.uid || decodeJwt(rec.access)?.sub || "";

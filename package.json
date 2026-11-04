@@ -1,9 +1,12 @@
 {
   "name": "magpie-wpt",
-  "version": "0.4.0",
-  "description": "在 magpie 的 WorkBuddy 登录方式里加一个「粘贴凭据登录」（仅供学习与交流）",
+  "version": "0.5.0",
+  "description": "在 magpie 的 WorkBuddy 登录方式里加一个「粘贴凭据登录」（仅供交流学习与逆向研究使用）",
   "type": "module",
   "main": "./plugin/index.mjs",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
   "engines": {
     "node": ">=18"
   },
@@ -22,5 +25,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/fenyan5312/magpie-wpt.git"
+  },
+  "homepage": "https://github.com/fenyan5312/magpie-wpt#readme",
+  "bugs": {
+    "url": "https://github.com/fenyan5312/magpie-wpt/issues"
   }
 }

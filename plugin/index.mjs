@@ -37,17 +37,25 @@ async function community() {
   let mod;
   for (const spec of tries) {
     try {
-      mod = await import(spec);
-      break;
+      const m = await import(spec);
+      // The package's "." export points at OpenCode 2's opencode2.mjs, which
+      // has no WorkBuddyAuthPlugin; the factory lives in index.mjs, reached
+      // by path. Take the first module that actually exports the factory,
+      // not the first one that merely imports: breaking on opencode2.mjs
+      // made this plugin fail to load at all (社区插件 0.2.20).
+      if (typeof m?.WorkBuddyAuthPlugin === "function") {
+        mod = m;
+        break;
+      }
     } catch {}
   }
 
   if (!mod) {
     throw new Error(
       [
-        `找不到社区插件 ${COMMUNITY}。`,
+        `找不到社区插件 ${COMMUNITY} 的 WorkBuddyAuthPlugin 导出。`,
         "",
-        "先装它，本插件是挂在它上面的：",
+        "先装它（或升级到能导出该工厂的版本），本插件是挂在它上面的：",
         `  magpie plugin add ${COMMUNITY}`,
         "",
         "装好之后再 magpie plugin add 本插件。",
@@ -55,9 +63,7 @@ async function community() {
     );
   }
 
-  const make = mod.WorkBuddyAuthPlugin;
-  if (typeof make !== "function") throw new Error(`${COMMUNITY} 没有导出 WorkBuddyAuthPlugin，版本可能变了。`);
-  return make;
+  return mod.WorkBuddyAuthPlugin;
 }
 
 export const WorkBuddyPasteLogin = async (ctx) => {
@@ -84,8 +90,8 @@ export const WorkBuddyPasteLogin = async (ctx) => {
             {
               type: "text",
               key: "credential",
-              message: "把凭据 JSON 粘到这里",
-              placeholder: '{"account":{…},"auth":{"accessToken":"…","refreshToken":"…"}}',
+              message: "把凭据 JSON、Cookie、请求头或 API key 粘到这里",
+              placeholder: '{"account":{…},"auth":{"accessToken":"…","refreshToken":"…"}} / access_token=…; refresh_token=… / ck_…',
             },
           ],
           authorize,
